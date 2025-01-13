@@ -30,8 +30,6 @@ jobs:
   check-release:
     needs: prepare
     runs-on: ubuntu-latest
-    outputs:
-      release: ${{ steps.check.outputs.release }}
     strategy:
       matrix:
         directory: ${{ fromJson(needs.prepare.outputs.matrix) }}
@@ -57,13 +55,19 @@ jobs:
       - name: Check release
         id: check
         run: |
-          output=$(uv run --script scripts/release.py --dry-run "${{ matrix.directory }}" "${{ needs.prepare.outputs.last_release }}" \
-            | grep -o -E "[a-zA-Z0-9\-]+@[0-9]+\.[0-9]+\.[0-9]+" || true)
+          dir_hash=$(echo "${{ matrix.directory }}" | sha256sum | awk '{print $1}')
+          output=$(uv run --script scripts/release.py --dry-run "${{ matrix.directory }}" "${{ needs.prepare.outputs.last_release }}" | grep -o -E "[a-zA-Z0-9\-]+@[0-9]+\.[0-9]+\.[0-9]+" || true)
           if [ ! -z "$output" ]; then
-            echo "release<<EOF" >> $GITHUB_OUTPUT
-            echo "$output" >> $GITHUB_OUTPUT
-            echo "EOF" >> $GITHUB_OUTPUT
+            mkdir -p ./outputs
+            echo "$output" > "./outputs/${dir_hash}"
+            echo "dir_hash=${dir_hash}" >> $GITHUB_OUTPUT
           fi
+
+      - uses: actions/upload-artifact@v4
+        if: steps.check.outputs.dir_hash
+        with:
+          name: release-outputs-${{ matrix.directory }}
+          path: ./outputs/${{ steps.check.outputs.dir_hash }}
 
   check-tag:
     needs: [prepare, check-release]
@@ -71,20 +75,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-outputs-*
+          merge-multiple: true
+          path: outputs
+
       - name: Simulate tag creation
         run: |
-          echo "${{ needs.check-release.outputs.release }}" > packages.txt
-          if [ -s packages.txt ]; then
-            DATE=$(date +%Y.%m.%d)
-            echo "🔍 Dry run: Would create tag v${DATE} if this was a real release"
+          ls -lh outputs
+          if [ -d outputs ]; then
+            cat outputs/* > packages.txt
+            if [ -s packages.txt ]; then
+              DATE=$(date +%Y.%m.%d)
+              echo "🔍 Dry run: Would create tag v${DATE} if this was a real release"
 
-            echo "# Release ${DATE}" > notes.md
-            echo "" >> notes.md
-            echo "## Updated Packages" >> notes.md
-            while IFS= read -r line; do
-              echo "- $line" >> notes.md
-            done < packages.txt
+              echo "# Release ${DATE}" > notes.md
+              echo "" >> notes.md
+              echo "## Updated Packages" >> notes.md
+              while IFS= read -r line; do
+                echo "- $line" >> notes.md
+              done < packages.txt
 
-            echo "🔍 Would create release with following notes:"
-            cat notes.md
+              echo "🔍 Would create release with following notes:"
+              cat notes.md
+            fi
           fi
